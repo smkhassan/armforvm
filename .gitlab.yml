@@ -1,0 +1,68 @@
+variables:
+  AZURE_DEPLOYMENT_PREFIX:   ${AZURE_RESOURCE_NAME_PREFIX}-data-dbx-deployment
+  AZURE_OWNER:               DEMO_ADMINS
+  AZURE_RESOURCE_GROUP:      ${AZURE_RESOURCE_NAME_PREFIX}-data-dbx-rg
+  AZURE_PARAMETERS_FILENAME: data-parameters.json
+  AZURE_TEMPLATE_FILENAME:   ./template.json
+  GITLAB_DEPLOY_BRANCH:      master
+  AZURE_ENABLE_DIAGNOSTICS:  "true"
+
+services:
+- docker:dind
+
+stages:
+- dbx
+
+dbx:
+  image:                     microsoft/azure-cli
+  stage:                     dbx
+  before_script:
+    - az login --use-device-code
+    - az account set --subscription ${AZURE_SUBSCRIPTION_NAME}
+  script:
+    - |
+      # create a resource group
+      az group create \
+        --name ${AZURE_RESOURCE_GROUP} \
+        --location ${AZURE_PRIMARY_LOCATION} \
+        --subscription ${AZURE_SUBSCRIPTION_NAME} \
+        --tags environment=${AZURE_ENVIRONMENT_NAME} \
+               owner=${AZURE_OWNER} \
+               pipeline=${CI_PROJECT_URL} \
+               lastUpdateAt="$(date)" \
+        --verbose
+    - |
+      # validate a resource group content
+      az group deployment validate \
+        --resource-group ${AZURE_RESOURCE_GROUP} \
+        --template-file ${AZURE_TEMPLATE_FILENAME} \
+        --parameters @${AZURE_PARAMETERS_FILENAME} \
+                      environment=${AZURE_ENVIRONMENT_NAME} \
+                      owner=${AZURE_OWNER} \
+                      keyVaultAdminId=$(az ad group show --group ${AZURE_OWNER} --query 'objectId' --output tsv) \
+                      resourceNamePrefix=${AZURE_RESOURCE_NAME_PREFIX} \
+                      enableDiagnostics=${AZURE_ENABLE_DIAGNOSTICS} \
+        --subscription ${AZURE_SUBSCRIPTION_NAME} \
+        --mode Incremental \
+        --verbose
+    - |
+      if [ "$GITLAB_DEPLOY_BRANCH" == "$CI_COMMIT_REF_NAME" ];
+      then
+        # deploy a resource group content
+        az group deployment create \
+          --name ${AZURE_DEPLOYMENT_PREFIX}-${CI_COMMIT_SHA:0:8} \
+          --resource-group ${AZURE_RESOURCE_GROUP} \
+          --template-file ${AZURE_TEMPLATE_FILENAME} \
+          --parameters @${AZURE_PARAMETERS_FILENAME} \
+                      environment=${AZURE_ENVIRONMENT_NAME} \
+                      owner=${AZURE_OWNER} \
+                      keyVaultAdminId=$(az ad group show --group ${AZURE_OWNER} --query 'objectId' --output tsv) \
+                      resourceNamePrefix=${AZURE_RESOURCE_NAME_PREFIX} \
+                      enableDiagnostics=${AZURE_ENABLE_DIAGNOSTICS} \
+          --subscription ${AZURE_SUBSCRIPTION_NAME} \
+          --mode Incremental \
+          --verbose
+      fi
+  after_script:
+    - az logout
+  when:                      manual
